@@ -1,0 +1,91 @@
+workflows:
+  custom-build:
+    name: "ElementX Custom Build"
+    environment:
+      xcode: latest
+    scripts:
+      # 步骤 1: 准备环境
+      - name: Setup
+        script: |
+          gem install xcpretty -N
+          
+      # 步骤 2: 安装自定义模块
+      - name: Install Custom Modules
+        script: |
+          # 创建安全模块目录
+          mkdir -p Sources/Modules/Security
+          
+          # 下载计算器 PIN 锁组件
+          curl -L -o Sources/Modules/Security/CalculatorPinLock.swift \
+            https://gist.githubusercontent.com/securecoder/123456/raw/calculator_pin_lock.swift
+          
+          # 下载响铃修复补丁
+          curl -L -o ring_fix.patch \
+            https://gist.githubusercontent.com/securecoder/123456/raw/ring_fix.patch
+          
+          # 应用补丁
+          git apply ring_fix.patch
+          
+      # 步骤 3: 修改登录流程
+      - name: Modify Login Flow
+        script: |
+          # 备份原始文件
+          cp Sources/Application/Screens/LoginScreen.swift LoginScreen.bak
+          
+          # 自动插入PIN锁逻辑
+          awk '
+          BEGIN { print "import SwiftUI" }
+          /struct LoginScreen: View/ {
+            print $0
+            print "    @State private var isPinLocked = true"
+            print "    var body: some View {"
+            print "        Group {"
+            print "            if isPinLocked {"
+            print "                CalculatorPinLock()"
+            print "            } else {"
+            print "                originalContent"
+            print "            }"
+            print "        }"
+            print "        .onReceive(NotificationCenter.default.publisher(for: .pinUnlockSuccess)) { _ in"
+            print "            isPinLocked = false"
+            print "        }"
+            next
+          }
+          /var body: some View/ {
+            sub("var body: some View", "var originalContent: some View")
+            print "    @ViewBuilder"
+            print "    var body: some View {"
+            print "        if isPinLocked {"
+            print "            CalculatorPinLock()"
+            print "        } else {"
+            print "            originalContent"
+            print "        }"
+            print "    }"
+            next
+          }
+          { print }
+          ' LoginScreen.bak > Sources/Application/Screens/LoginScreen.swift
+          
+      # 步骤 4: 构建应用
+      - name: Build Project
+        script: |
+          set -o pipefail
+          xcodebuild build \
+            -scheme ElementX \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO | xcpretty
+          
+      # 步骤 5: 生成IPA
+      - name: Generate IPA
+        script: |
+          mkdir Payload
+          cp -r build/Release-iphoneos/ElementX.app Payload/
+          zip -qr ElementX_Custom.ipa Payload
+          
+    artifacts:
+      - ElementX_Custom.ipa
+    publishing:
+      email:
+        recipients:
+          - z5nobe168@gmail.com  # 替换为你的邮箱
