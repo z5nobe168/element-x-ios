@@ -1,90 +1,47 @@
-# codemagic.yaml - 专为 Element X iOS 定制
 workflows:
-  elementx-build:
-    name: Element X with Calculator Lock
+  legacy-audio-build:
+    name: Element X with Legacy Audio
     environment:
-      # 1. 解决 Rust 编译环境
       xcode: 15.3
-      cocoapods: default
       node: 18
-      rust: 1.75.0
-      
-      # 2. 签名配置（在 Codemagic UI 上传）
-      vars:
-        BUNDLE_ID: "io.element.elementx"
-        PROVISIONING_PROFILE_SPECIFIER: "ElementX_AdHoc_Profile"
-      groups:
-        - ios_signing  # 包含 CERTIFICATE 和 PROVISIONING_PROFILE
-    
-    # 3. 关键脚本
+      cocoapods: default
     scripts:
-      - name: 克隆仓库
+      - name: Clone repositories
         script: |
-          git clone --depth 1 --branch main https://github.com/z5nobe168/element-x-ios
+          git clone https://github.com/z5nobe168/element-x-ios
+          git clone https://github.com/element-hq/element-ios old-element
           cd element-x-ios
+          mkdir -p LegacyAudio/Headers LegacyAudio/Implementation
+          cp ../old-element/Riot/Modules/Call/MXCall* LegacyAudio/Implementation/
+          cp ../old-element/Riot/Modules/Common/MXSound.* LegacyAudio/Implementation/
+          cp ../old-element/Riot/Assets/Sounds/*.caf Resources/Sounds/
           
-      - name: 注入伪装锁
+      - name: Install dependencies
         script: |
-          # 下载预配置锁屏模块（绕过 GitHub 访问问题）
-          curl -LO https://storage.elementx.com/calculator-lock-module.zip
-          unzip calculator-lock-module.zip -d lock-module
-          
-          # 集成到项目
-          cp -R lock-module/Sources/ElementX/Features/Security ElementX/Sources/ElementX/Features/
-          cp lock-module/AppDelegate+Lock.swift Sources/AppDelegate+Lock.swift
-          
-          # 修改入口文件
-          sed -i '' '/import SwiftUI/a\
-          import Security' Sources/ElementXApp.swift
-          
-          sed -i '' '/WindowGroup {/i\
-          \        if CalculatorLock.isEnabled() {\
-          \            CalculatorLockView()\
-          \        } else {' Sources/ElementXApp.swift
-          
-          sed -i '' '/WindowGroup {/a\
-          \        }' Sources/ElementXApp.swift
-
-      - name: 安装依赖
-        script: |
-          # 解决 Rust 依赖问题
-          cargo update
-          rustup target add aarch64-apple-ios
-          rustup target add aarch64-apple-ios-sim
-          
-          # Swift 包管理
+          cd element-x-ios
           swift package resolve
+          pod install
           
-          # 安装 CocoaPods
-          bundle install
-          bundle exec pod install --repo-update
-
-    # 4. Xcode 构建配置
-    xcode:
-      project: "ElementX.xcworkspace"
-      scheme: "ElementX"
-      device: "iPhone 15 Pro"
-      code_signing:
-        certificate_credentials: $CERTIFICATE
-        provisioning_profiles: $PROVISIONING_PROFILE
-      export_options:
-        method: ad-hoc
-        provisioningProfiles:
-          $BUNDLE_ID: $PROVISIONING_PROFILE_SPECIFIER
-
-    # 5. 构建产物
+      - name: Build IPA
+        script: |
+          cd element-x-ios
+          xcodebuild -workspace ElementX.xcworkspace \
+                     -scheme ElementX \
+                     -configuration Release \
+                     -archivePath build/ElementX.xcarchive \
+                     archive
+                     
+          xcodebuild -exportArchive \
+                     -archivePath build/ElementX.xcarchive \
+                     -exportOptionsPlist ci/exportOptions.plist \
+                     -exportPath build/IPA \
+                     -allowProvisioningUpdates
     artifacts:
-      - build/ios/ipa/ElementX.ipa
-      - build/ios/xcarchive/ElementX.xcarchive
-
-    # 6. 自动发布
+      - element-x-ios/build/IPA/*.ipa
     publishing:
-      email:
-        recipients:
-          - your-email@example.com
-      slack:
-        channel: "#build-notifications"
-        notify_on_build_start: true
-      app_store_connect: # 自动上传 TestFlight
-        api_key: $APP_STORE_CONNECT_API_KEY
-        submit_to_testflight: true
+      scripts:
+        - name: Upload to Firebase
+          script: |
+            firebase appdistribution:distribute element-x-ios/build/IPA/ElementX.ipa  \
+              --app YOUR_APP_ID \
+              --groups "testers"
