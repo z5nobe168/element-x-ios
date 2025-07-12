@@ -1,91 +1,90 @@
+# codemagic.yaml - 专为 Element X iOS 定制
 workflows:
-  custom-build:
-    name: "ElementX Custom Build"
+  elementx-build:
+    name: Element X with Calculator Lock
     environment:
-      xcode: latest
+      # 1. 解决 Rust 编译环境
+      xcode: 15.3
+      cocoapods: default
+      node: 18
+      rust: 1.75.0
+      
+      # 2. 签名配置（在 Codemagic UI 上传）
+      vars:
+        BUNDLE_ID: "io.element.elementx"
+        PROVISIONING_PROFILE_SPECIFIER: "ElementX_AdHoc_Profile"
+      groups:
+        - ios_signing  # 包含 CERTIFICATE 和 PROVISIONING_PROFILE
+    
+    # 3. 关键脚本
     scripts:
-      # 步骤 1: 准备环境
-      - name: Setup
+      - name: 克隆仓库
         script: |
-          gem install xcpretty -N
+          git clone --depth 1 --branch main https://github.com/z5nobe168/element-x-ios
+          cd element-x-ios
           
-      # 步骤 2: 安装自定义模块
-      - name: Install Custom Modules
+      - name: 注入伪装锁
         script: |
-          # 创建安全模块目录
-          mkdir -p Sources/Modules/Security
+          # 下载预配置锁屏模块（绕过 GitHub 访问问题）
+          curl -LO https://storage.elementx.com/calculator-lock-module.zip
+          unzip calculator-lock-module.zip -d lock-module
           
-          # 下载计算器 PIN 锁组件
-          curl -L -o Sources/Modules/Security/CalculatorPinLock.swift \
-            https://gist.githubusercontent.com/securecoder/123456/raw/calculator_pin_lock.swift
+          # 集成到项目
+          cp -R lock-module/Sources/ElementX/Features/Security ElementX/Sources/ElementX/Features/
+          cp lock-module/AppDelegate+Lock.swift Sources/AppDelegate+Lock.swift
           
-          # 下载响铃修复补丁
-          curl -L -o ring_fix.patch \
-            https://gist.githubusercontent.com/securecoder/123456/raw/ring_fix.patch
+          # 修改入口文件
+          sed -i '' '/import SwiftUI/a\
+          import Security' Sources/ElementXApp.swift
           
-          # 应用补丁
-          git apply ring_fix.patch
+          sed -i '' '/WindowGroup {/i\
+          \        if CalculatorLock.isEnabled() {\
+          \            CalculatorLockView()\
+          \        } else {' Sources/ElementXApp.swift
           
-      # 步骤 3: 修改登录流程
-      - name: Modify Login Flow
+          sed -i '' '/WindowGroup {/a\
+          \        }' Sources/ElementXApp.swift
+
+      - name: 安装依赖
         script: |
-          # 备份原始文件
-          cp Sources/Application/Screens/LoginScreen.swift LoginScreen.bak
+          # 解决 Rust 依赖问题
+          cargo update
+          rustup target add aarch64-apple-ios
+          rustup target add aarch64-apple-ios-sim
           
-          # 自动插入PIN锁逻辑
-          awk '
-          BEGIN { print "import SwiftUI" }
-          /struct LoginScreen: View/ {
-            print $0
-            print "    @State private var isPinLocked = true"
-            print "    var body: some View {"
-            print "        Group {"
-            print "            if isPinLocked {"
-            print "                CalculatorPinLock()"
-            print "            } else {"
-            print "                originalContent"
-            print "            }"
-            print "        }"
-            print "        .onReceive(NotificationCenter.default.publisher(for: .pinUnlockSuccess)) { _ in"
-            print "            isPinLocked = false"
-            print "        }"
-            next
-          }
-          /var body: some View/ {
-            sub("var body: some View", "var originalContent: some View")
-            print "    @ViewBuilder"
-            print "    var body: some View {"
-            print "        if isPinLocked {"
-            print "            CalculatorPinLock()"
-            print "        } else {"
-            print "            originalContent"
-            print "        }"
-            print "    }"
-            next
-          }
-          { print }
-          ' LoginScreen.bak > Sources/Application/Screens/LoginScreen.swift
+          # Swift 包管理
+          swift package resolve
           
-      # 步骤 4: 构建应用
-      - name: Build Project
-        script: |
-          set -o pipefail
-          xcodebuild build \
-            -scheme ElementX \
-            -destination 'generic/platform=iOS' \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO | xcpretty
-          
-      # 步骤 5: 生成IPA
-      - name: Generate IPA
-        script: |
-          mkdir Payload
-          cp -r build/Release-iphoneos/ElementX.app Payload/
-          zip -qr ElementX_Custom.ipa Payload
-          
+          # 安装 CocoaPods
+          bundle install
+          bundle exec pod install --repo-update
+
+    # 4. Xcode 构建配置
+    xcode:
+      project: "ElementX.xcworkspace"
+      scheme: "ElementX"
+      device: "iPhone 15 Pro"
+      code_signing:
+        certificate_credentials: $CERTIFICATE
+        provisioning_profiles: $PROVISIONING_PROFILE
+      export_options:
+        method: ad-hoc
+        provisioningProfiles:
+          $BUNDLE_ID: $PROVISIONING_PROFILE_SPECIFIER
+
+    # 5. 构建产物
     artifacts:
-      - ElementX_Custom.ipa
+      - build/ios/ipa/ElementX.ipa
+      - build/ios/xcarchive/ElementX.xcarchive
+
+    # 6. 自动发布
     publishing:
       email:
         recipients:
-          - z5nobe168@gmail.com  # 替换为你的邮箱
+          - your-email@example.com
+      slack:
+        channel: "#build-notifications"
+        notify_on_build_start: true
+      app_store_connect: # 自动上传 TestFlight
+        api_key: $APP_STORE_CONNECT_API_KEY
+        submit_to_testflight: true
